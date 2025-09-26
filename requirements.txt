@@ -3,6 +3,8 @@
 # deepgram-sdk
 # numpy
 # sounddevice
+dotenv
+requests
 annotated-types==0.7.0
 anyio==4.10.0
 click==8.3.0

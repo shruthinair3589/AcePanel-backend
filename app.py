@@ -3,7 +3,7 @@ import shutil
 import uuid
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File,APIRouter,Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 import mammoth
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
@@ -16,6 +16,13 @@ import nltk
 import re
 import os
 from datetime import datetime
+import requests
+from dotenv import load_dotenv
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import smtplib
+
+load_dotenv()
 
 # Download required NLP resources (run once)
 nltk.download('punkt')
@@ -37,6 +44,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+    
 # Dependency
 def get_db():
     db = SessionLocal()
@@ -126,7 +135,7 @@ def login_user(user: UserLogin, db: Session = Depends(get_db)):
         "role": db_user.role,
         "email": db_user.email
     }
-from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from db import SessionLocal, engine
@@ -367,16 +376,22 @@ def extract_name(text: str) -> str:
         if not line:
             continue
 
-        # Skip obvious non-name headers
+        # Remove common prefixes like "Name:", "Candidate Name:"
+        line = re.sub(r"^(Name|Candidate Name)[:\-]\s*", "", line, flags=re.IGNORECASE)
+
         if any(word in line.upper() for word in skip_keywords):
             continue
 
-        # Match names in Title Case: "John Doe", "John A Doe", "Mary Ann Smith"
-        if re.match(r"^[A-Z][a-z]+(?:\s[A-Z][a-z]+){1,2}$", line):
+        # Match Title Case with optional middle initials
+        if re.match(r"^[A-Z][a-z]+(?:\s[A-Z]\.?)?(?:\s[A-Z][a-z]+)*$", line):
             return line
 
-        # Match ALL CAPS names: "JOHN DOE", "JOHN A DOE", "MARY ANN SMITH"
-        if re.match(r"^[A-Z]+(?:\s[A-Z]+){1,2}$", line):
+        # Match ALL CAPS with optional middle initials
+        if re.match(r"^[A-Z]+(?:\s[A-Z]\.?)?(?:\s[A-Z]+)*$", line):
+            return line.title()
+
+        # Fallback: first line with <=5 words and no digits
+        if len(line.split()) <= 5 and not any(char.isdigit() for char in line):
             return line.title()
 
     return ""
@@ -439,29 +454,31 @@ def download_resume(candidate_id: int, db: Session = Depends(get_db)):
         "Content-Disposition": f"attachment; filename={filename}"
     })
 # ------------------- Interview Endpoints -------------------
-@app.post("/schedule-interview")
-def schedule_interview(interview: InterviewCreate, db: Session = Depends(get_db)):
-    candidate = db.query(Candidate).filter(Candidate.id == interview.candidate_id).first()
-    if not candidate:
-        raise HTTPException(status_code=404, detail="Candidate not found")
-    call_id = str(uuid.uuid4())
-    new_interview = Interview(
-        candidate_id=interview.candidate_id,
-        scheduled_at=interview.scheduled_at,
-        status="Scheduled",
-        call_id=call_id
-    )
-    db.add(new_interview)
-    db.commit()
-    db.refresh(new_interview)
-    return {
-        "message": "Interview scheduled",
-        "interview_id": new_interview.id,
-        "call_id": new_interview.call_id,
-        "candidate_id": new_interview.candidate_id,
-        "scheduled_at": new_interview.scheduled_at,
-        "status": new_interview.status
-    }
+@app.get("/get-all-interviews")
+def get_all_interviews(db: Session = Depends(get_db)):
+    now = datetime.utcnow()
+    all_interviews = db.query(Interview).all()
+    upcoming, past = [], []
+
+    for i in all_interviews:
+        interview_data = {
+            "id": i.id,
+            "candidate_id": i.candidate_id,
+            "candidate_name": i.candidate.name,
+            "scheduled_at": i.scheduled_at,
+            "status": i.status,
+            "call_id": i.call_id,
+            "feedback": i.feedback,
+            "score": i.score,
+            "transcript": i.transcript,
+            "video_url": i.video_url
+        }
+        if i.scheduled_at >= now:
+            upcoming.append(interview_data)
+        else:
+            past.append(interview_data)
+
+    return {"upcoming": upcoming, "past": past}
 
 @app.put("/interview/{interview_id}/complete")
 def complete_interview(interview_id: int, result: InterviewResultUpdate, db: Session = Depends(get_db)):
@@ -515,4 +532,119 @@ def get_interview(interview_id: int, db: Session = Depends(get_db)):
         "call_id": interview.call_id,
         "transcript": interview.transcript,
         "video_url": interview.video_url
+    }
+
+
+def fetch_call_details(call_id: str):
+    url = f"https://api.vapi.ai/call/{call_id}"
+    headers = {
+        "Authorization": f"Bearer {os.getenv('VAPI_API_KEY')}"
+    }
+    response = requests.get(url, headers=headers)
+    return response.json()
+
+@app.get("/call-details")
+async def get_call_details(call_id: str = Query(None)):
+    if not call_id:
+        return JSONResponse(content={"error": "Call ID is required"}, status_code=400)
+
+    try:
+        print("calling function from BE")
+        response = fetch_call_details(call_id)
+        summary = response.get("summary")
+        analysis = response.get("analysis")
+        return {"analysis": analysis, "summary": summary}
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+    
+
+
+# ---------------- Email Function ----------------
+def send_interview_email(to_email: str, candidate_name: str, candidate_id: int, interview_id: int, scheduled_at: datetime):
+    sender_email = os.getenv("SMTP_EMAIL")       # ace.panel123@gmail.com
+    sender_password = os.getenv("SMTP_PASSWORD") # Gmail App Password
+    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+    
+    subject = "Your Interview is Scheduled"
+    
+    # Candidate-specific login link with prefill
+    interview_link = (
+        f"http://127.0.0.1:3000/login?"
+        f"role=candidate&candidate_id={candidate_id}&interview_id={interview_id}&email={to_email}"
+    )
+    
+    scheduled_str = scheduled_at.strftime("%A, %d %B %Y at %I:%M %p")
+    
+    html_content = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; line-height:1.5;">
+        <h2 style="color:#333;">Hi {candidate_name},</h2>
+        <p>Your interview has been scheduled successfully. Please find the details below:</p>
+        <table style="border-collapse: collapse;">
+            <tr>
+                <td style="padding: 5px; font-weight:bold;">Date & Time:</td>
+                <td style="padding: 5px;">{scheduled_str}</td>
+            </tr>
+            <tr>
+                <td style="padding: 5px; font-weight:bold;">Interview Link:</td>
+                <td style="padding: 5px;"><a href="{interview_link}" style="color:#1a73e8;">Login & Join Interview</a></td>
+            </tr>
+        </table>
+        <p>Kindly be ready 5 minutes before the scheduled time.</p>
+        <p>Best regards,<br/>Recruitment Team</p>
+    </body>
+    </html>
+    """
+    
+    message = MIMEMultipart("alternative")
+    message["Subject"] = subject
+    message["From"] = sender_email
+    message["To"] = to_email
+    message.attach(MIMEText(html_content, "html"))
+    
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, to_email, message.as_string())
+            print(f"Email sent to {to_email}")
+    except Exception as e:
+        print(f"Error sending email: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {e}")
+
+# ---------------- Schedule Interview Endpoint ----------------
+@app.post("/schedule-interview")
+def schedule_interview(interview: InterviewCreate, db: Session = Depends(get_db)):
+    candidate = db.query(Candidate).filter(Candidate.id == interview.candidate_id).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    
+    call_id = str(uuid.uuid4())
+    new_interview = Interview(
+        candidate_id=interview.candidate_id,
+        scheduled_at=interview.scheduled_at,
+        status="Scheduled",
+        call_id=call_id
+    )
+    db.add(new_interview)
+    db.commit()
+    db.refresh(new_interview)
+    
+    # Send email with correct arguments
+    send_interview_email(
+        to_email=candidate.email,
+        candidate_name=candidate.name,
+        candidate_id=candidate.id,
+        interview_id=new_interview.id,
+        scheduled_at=new_interview.scheduled_at
+    )
+    
+    return {
+        "message": "Interview scheduled and email sent",
+        "interview_id": new_interview.id,
+        "call_id": new_interview.call_id,
+        "candidate_id": new_interview.candidate_id,
+        "scheduled_at": new_interview.scheduled_at,
+        "status": new_interview.status
     }
