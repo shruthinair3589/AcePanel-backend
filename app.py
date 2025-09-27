@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 import mammoth
 from pydantic import BaseModel, EmailStr
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from db import SessionLocal, engine
 from models.models import Base, Candidate, Interview, User
@@ -21,12 +22,12 @@ from dotenv import load_dotenv
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import smtplib
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader, JSONLoader
-from langchain_groq import ChatGroq
-from langchain_ollama import OllamaEmbeddings
-from langchain_community.vectorstores import Chroma
-from langchain.chains import RetrievalQA
+# from langchain.text_splitter import RecursiveCharacterTextSplitter
+# from langchain_community.document_loaders import PyPDFLoader, JSONLoader
+# from langchain_groq import ChatGroq
+# from langchain_ollama import OllamaEmbeddings
+# from langchain_community.vectorstores import Chroma
+# from langchain.chains import RetrievalQA
 
 load_dotenv()
 
@@ -51,31 +52,31 @@ app.add_middleware(
 )
 
 documents = []
-for filename in os.listdir(RESUME_DIR):
-    if filename.endswith(".pdf"):
-        loader =  PyPDFLoader(os.path.join(RESUME_DIR, filename))
-        docs = loader.load()
-        documents.extend(docs)
+# for filename in os.listdir(RESUME_DIR):
+#     if filename.endswith(".pdf"):
+#         loader =  PyPDFLoader(os.path.join(RESUME_DIR, filename))
+#         docs = loader.load()
+#         documents.extend(docs)
 
 
-splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-chunks = splitter.split_documents(documents)
+# splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+# chunks = splitter.split_documents(documents)
 
 
-embedding_model = OllamaEmbeddings(model="all-minilm")
-vectordb = Chroma.from_documents(chunks, embedding=embedding_model, persist_directory="./chroma_db")
-vectordb.persist()
-print(vectordb)
-retriever = vectordb.as_retriever(search_kwargs={"k": 3})
+# embedding_model = OllamaEmbeddings(model="all-minilm")
+# vectordb = Chroma.from_documents(chunks, embedding=embedding_model, persist_directory="./chroma_db")
+# vectordb.persist()
+# print(vectordb)
+# retriever = vectordb.as_retriever(search_kwargs={"k": 3})
 
 
-llm = ChatGroq(api_key="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", model_name="openai/gpt-oss-120b")
+# llm = ChatGroq(api_key="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", model_name="openai/gpt-oss-120b")
 
-qa_chain = RetrievalQA.from_chain_type(
-    llm=llm,
-    retriever=retriever,
-    return_source_documents=True
-)
+# qa_chain = RetrievalQA.from_chain_type(
+#     llm=llm,
+#     retriever=retriever,
+#     return_source_documents=True
+# )
 
     
 # Dependency
@@ -118,6 +119,7 @@ class UserRegister(BaseModel):
 class InterviewCreate(BaseModel):
     candidate_id: int
     scheduled_at: datetime
+    technology: list[str] | None = None
 
 class InterviewResultUpdate(BaseModel):
     transcript: str
@@ -492,7 +494,7 @@ def download_resume(candidate_id: int, db: Session = Depends(get_db)):
 # ------------------- Interview Endpoints -------------------
 @app.get("/get-all-interviews")
 def get_all_interviews(db: Session = Depends(get_db)):
-    now = datetime.utcnow()
+    now = func.now()
     all_interviews = db.query(Interview).all()
     upcoming, past = [], []
 
@@ -501,6 +503,7 @@ def get_all_interviews(db: Session = Depends(get_db)):
             "id": i.id,
             "candidate_id": i.candidate_id,
             "candidate_name": i.candidate.name,
+            "candidate_email": i.candidate.email,  
             "scheduled_at": i.scheduled_at,
             "status": i.status,
             "call_id": i.call_id,
@@ -515,6 +518,7 @@ def get_all_interviews(db: Session = Depends(get_db)):
             past.append(interview_data)
 
     return {"upcoming": upcoming, "past": past}
+
 
 @app.put("/interview/{interview_id}/complete")
 def complete_interview(interview_id: int, result: InterviewResultUpdate, db: Session = Depends(get_db)):
@@ -543,6 +547,9 @@ def get_candidate_interviews(candidate_id: int, db: Session = Depends(get_db)):
     return [
         {
             "id": i.id,
+            "candidate_id": candidate.id,            
+            "candidate_name": candidate.name,        
+            "candidate_email": candidate.email,      
             "scheduled_at": i.scheduled_at,
             "status": i.status,
             "feedback": i.feedback,
@@ -561,64 +568,68 @@ def get_interview(interview_id: int, db: Session = Depends(get_db)):
     return {
         "id": interview.id,
         "candidate_id": interview.candidate_id,
+        "candidate_name": interview.candidate.name,   
+        "candidate_email": interview.candidate.email,
+        "position": interview.candidate.position,
+        "experience_years": interview.candidate.years_of_experience,
         "scheduled_at": interview.scheduled_at,
         "status": interview.status,
         "feedback": interview.feedback,
         "score": interview.score,
         "call_id": interview.call_id,
         "transcript": interview.transcript,
-        "video_url": interview.video_url
+        "video_url": interview.video_url,
+        "technology": interview.get_technology()
     }
 
+# @app.post("/chat")
+# async def chat(request: ChatRequest):
+#     query = request.message
+#     if not query.strip():
+#         raise HTTPException(status_code=400, detail="Message is required")
 
-@app.post("/chat")
-async def chat(request: ChatRequest):
-    query = request.message
-    if not query.strip():
-        raise HTTPException(status_code=400, detail="Message is required")
+#     try:
+#         # Run through RAG pipeline
+#         result = qa_chain.invoke({"query": query})
 
-    try:
-        # Run through RAG pipeline
-        result = qa_chain.invoke({"query": query})
+#         # Extract answer + source docs if available
+#         answer = result.get("result")
+#         sources = []
+#         if "source_documents" in result:
+#             sources = [doc.metadata.get("source", "Unknown") for doc in result["source_documents"]]
 
-        # Extract answer + source docs if available
-        answer = result.get("result")
-        sources = []
-        if "source_documents" in result:
-            sources = [doc.metadata.get("source", "Unknown") for doc in result["source_documents"]]
+#         return {
+#             "answer": answer,
+#             "sources": sources
+#         }
 
-        return {
-            "answer": answer,
-            "sources": sources
-        }
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# @app.post("/upload-resume")
+# async def upload_resume(file: UploadFile = File(...)):
+#     try:
+#         if not file.filename:
+#             raise HTTPException(status_code=400, detail="No selected file")
 
-@app.post("/upload-resume")
-async def upload_resume(file: UploadFile = File(...)):
-    try:
-        if not file.filename:
-            raise HTTPException(status_code=400, detail="No selected file")
+#         file_path = os.path.join(RESUME_DIR, file.filename)
 
-        file_path = os.path.join(RESUME_DIR, file.filename)
-
-        # Save file
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+#         # Save file
+#         with open(file_path, "wb") as buffer:
+#             shutil.copyfileobj(file.file, buffer)
         
-        if file.filename.endswith(".pdf"):
-            loader = PyPDFLoader(file_path)
-            docs = loader.load()
+#         if file.filename.endswith(".pdf"):
+#             loader = PyPDFLoader(file_path)
+#             docs = loader.load()
 
-            chunks = splitter.split_documents(docs)
-            vectordb.add_documents(chunks)
-            vectordb.persist()
+#             chunks = splitter.split_documents(docs)
+#             vectordb.add_documents(chunks)
+#             vectordb.persist()
             
 
-        return {"message": "File uploaded successfully", "filename": file.filename}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+#         return {"message": "File uploaded successfully", "filename": file.filename}
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
 
 def fetch_call_details(call_id: str):
@@ -649,13 +660,20 @@ async def get_call_details(call_id: str = Query(None)):
 
 
 # ---------------- Email Function ----------------
-def send_interview_email(to_email: str, candidate_name: str, candidate_id: int, interview_id: int, scheduled_at: datetime):
-    sender_email = os.getenv("SMTP_EMAIL")       # ace.panel123@gmail.com
-    sender_password = os.getenv("SMTP_PASSWORD") # Gmail App Password
+def send_interview_email(
+    to_email: str,
+    candidate_name: str,
+    candidate_id: int,
+    interview_id: int,
+    scheduled_at: datetime,
+    technologies: list[str] | None = None
+):
+    sender_email = os.getenv("SMTP_EMAIL")       # e.g., noreply@yourdomain.com
+    sender_password = os.getenv("SMTP_PASSWORD")
     smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
     smtp_port = int(os.getenv("SMTP_PORT", 587))
     
-    subject = "Your Interview is Scheduled"
+    subject = "Interview Confirmation – Scheduled with AcePanel"
     
     # Candidate-specific login link with prefill
     interview_link = (
@@ -664,31 +682,57 @@ def send_interview_email(to_email: str, candidate_name: str, candidate_id: int, 
     )
     
     scheduled_str = scheduled_at.strftime("%A, %d %B %Y at %I:%M %p")
-    
+
+    # Format technologies list for display
+    tech_list_html = ""
+    if technologies:
+        tech_items = "".join(f"<li>{t}</li>" for t in technologies)
+        tech_list_html = f"""
+        <p><strong>Technologies to be assessed:</strong></p>
+        <ul style="margin: 5px 0 15px 20px; color:#444;">
+            {tech_items}
+        </ul>
+        """
+
     html_content = f"""
     <html>
-    <body style="font-family: Arial, sans-serif; line-height:1.5;">
-        <h2 style="color:#333;">Hi {candidate_name},</h2>
-        <p>Your interview has been scheduled successfully. Please find the details below:</p>
-        <table style="border-collapse: collapse;">
+    <body style="font-family: Arial, sans-serif; line-height:1.6; color:#333;">
+        <h2 style="color:#2c3e50;">Interview Confirmation</h2>
+        <p>Dear {candidate_name},</p>
+        
+        <p>We are pleased to confirm that your interview has been scheduled. Please review the details below:</p>
+        
+        <table style="border-collapse: collapse; margin: 15px 0;">
             <tr>
-                <td style="padding: 5px; font-weight:bold;">Date & Time:</td>
-                <td style="padding: 5px;">{scheduled_str}</td>
+                <td style="padding: 6px; font-weight: bold;">Date &amp; Time:</td>
+                <td style="padding: 6px;">{scheduled_str}</td>
             </tr>
             <tr>
-                <td style="padding: 5px; font-weight:bold;">Interview Link:</td>
-                <td style="padding: 5px;"><a href="{interview_link}" style="color:#1a73e8;">Login & Join Interview</a></td>
+                <td style="padding: 6px; font-weight: bold;">Access Link:</td>
+                <td style="padding: 6px;">
+                    <a href="{interview_link}" style="color:#1a73e8; text-decoration:none;">Join Interview</a>
+                </td>
             </tr>
         </table>
-        <p>Kindly be ready 5 minutes before the scheduled time.</p>
-        <p>Best regards,<br/>Recruitment Team</p>
+
+        {tech_list_html}
+        
+        <p>👉 Please log in at least 5 minutes before your scheduled time to ensure everything is set up.</p>
+        
+        <p style="margin-top:20px;">Best regards,<br/>
+        <strong>AcePanel Recruitment Team</strong></p>
+        
+        <hr style="margin:20px 0; border:none; border-top:1px solid #ddd;" />
+        <p style="font-size: 12px; color:#777;">
+            This is an automated message from AcePanel. If you have any questions, please contact our support team.
+        </p>
     </body>
     </html>
     """
     
     message = MIMEMultipart("alternative")
     message["Subject"] = subject
-    message["From"] = sender_email
+    message["From"] = f"AcePanel Recruitment <{sender_email}>"
     message["To"] = to_email
     message.attach(MIMEText(html_content, "html"))
     
@@ -714,19 +758,24 @@ def schedule_interview(interview: InterviewCreate, db: Session = Depends(get_db)
         candidate_id=interview.candidate_id,
         scheduled_at=interview.scheduled_at,
         status="Scheduled",
-        call_id=call_id
+        call_id=call_id,
     )
+
+    # set technologies
+    if interview.technology:
+        new_interview.set_technology(interview.technology)
+
     db.add(new_interview)
     db.commit()
     db.refresh(new_interview)
     
-    # Send email with correct arguments
     send_interview_email(
         to_email=candidate.email,
         candidate_name=candidate.name,
         candidate_id=candidate.id,
         interview_id=new_interview.id,
-        scheduled_at=new_interview.scheduled_at
+        scheduled_at=new_interview.scheduled_at,
+        technologies=new_interview.get_technology()
     )
     
     return {
@@ -735,5 +784,6 @@ def schedule_interview(interview: InterviewCreate, db: Session = Depends(get_db)
         "call_id": new_interview.call_id,
         "candidate_id": new_interview.candidate_id,
         "scheduled_at": new_interview.scheduled_at,
-        "status": new_interview.status
+        "status": new_interview.status,
+        "technology": new_interview.get_technology()
     }

@@ -46,8 +46,15 @@ class Interview(Base):
     call_id = Column(String, nullable=True, unique=True)
     transcript = Column(Text, nullable=True)
     video_url = Column(String, nullable=True)
+    technology = Column(Text, nullable=True)  # new field
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     candidate = relationship("Candidate", back_populates="interviews")
+
+    def set_technology(self, tech_list: list[str]):
+        self.technology = json.dumps(tech_list) if tech_list else None
+
+    def get_technology(self) -> list[str]:
+        return json.loads(self.technology) if self.technology else []
 
