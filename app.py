@@ -1,7 +1,7 @@
 import io
 import shutil
 import uuid
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File,APIRouter,Form
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File,APIRouter,Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 import mammoth
@@ -22,12 +22,12 @@ from dotenv import load_dotenv
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import smtplib
-# from langchain.text_splitter import RecursiveCharacterTextSplitter
-# from langchain_community.document_loaders import PyPDFLoader, JSONLoader
-# from langchain_groq import ChatGroq
-# from langchain_ollama import OllamaEmbeddings
-# from langchain_community.vectorstores import Chroma
-# from langchain.chains import RetrievalQA
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import PyPDFLoader, JSONLoader
+from langchain_groq import ChatGroq
+from langchain_ollama import OllamaEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain.chains import RetrievalQA
 
 load_dotenv()
 
@@ -52,31 +52,31 @@ app.add_middleware(
 )
 
 documents = []
-# for filename in os.listdir(RESUME_DIR):
-#     if filename.endswith(".pdf"):
-#         loader =  PyPDFLoader(os.path.join(RESUME_DIR, filename))
-#         docs = loader.load()
-#         documents.extend(docs)
+for filename in os.listdir(RESUME_DIR):
+    if filename.endswith(".pdf"):
+        loader =  PyPDFLoader(os.path.join(RESUME_DIR, filename))
+        docs = loader.load()
+        documents.extend(docs)
 
 
-# splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-# chunks = splitter.split_documents(documents)
+splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+chunks = splitter.split_documents(documents)
 
 
-# embedding_model = OllamaEmbeddings(model="all-minilm")
-# vectordb = Chroma.from_documents(chunks, embedding=embedding_model, persist_directory="./chroma_db")
-# vectordb.persist()
-# print(vectordb)
-# retriever = vectordb.as_retriever(search_kwargs={"k": 3})
+embedding_model = OllamaEmbeddings(model="all-minilm")
+vectordb = Chroma.from_documents(chunks, embedding=embedding_model, persist_directory="./chroma_db")
+vectordb.persist()
+print(vectordb)
+retriever = vectordb.as_retriever(search_kwargs={"k": 3})
 
 
-# llm = ChatGroq(api_key="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", model_name="openai/gpt-oss-120b")
+llm = ChatGroq(api_key="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", model_name="openai/gpt-oss-120b")
 
-# qa_chain = RetrievalQA.from_chain_type(
-#     llm=llm,
-#     retriever=retriever,
-#     return_source_documents=True
-# )
+qa_chain = RetrievalQA.from_chain_type(
+    llm=llm,
+    retriever=retriever,
+    return_source_documents=True
+)
 
     
 # Dependency
@@ -582,55 +582,23 @@ def get_interview(interview_id: int, db: Session = Depends(get_db)):
         "technology": interview.get_technology()
     }
 
-# @app.post("/chat")
-# async def chat(request: ChatRequest):
-#     query = request.message
-#     if not query.strip():
-#         raise HTTPException(status_code=400, detail="Message is required")
+transcript_storage = {}
 
-#     try:
-#         # Run through RAG pipeline
-#         result = qa_chain.invoke({"query": query})
+@app.post("/save-transcript")
+async def save_transcript(request: Request):
+    data = await request.json()
+    call_id = data.get("call_id")
+    role = data.get("role")
+    transcript = data.get("transcript")
 
-#         # Extract answer + source docs if available
-#         answer = result.get("result")
-#         sources = []
-#         if "source_documents" in result:
-#             sources = [doc.metadata.get("source", "Unknown") for doc in result["source_documents"]]
+    if not call_id or not role or not transcript:
+        return JSONResponse({"error": "call_id, role, transcript required"}, status_code=400)
 
-#         return {
-#             "answer": answer,
-#             "sources": sources
-#         }
+    if call_id not in transcript_storage:
+        transcript_storage[call_id] = []
 
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
-
-# @app.post("/upload-resume")
-# async def upload_resume(file: UploadFile = File(...)):
-#     try:
-#         if not file.filename:
-#             raise HTTPException(status_code=400, detail="No selected file")
-
-#         file_path = os.path.join(RESUME_DIR, file.filename)
-
-#         # Save file
-#         with open(file_path, "wb") as buffer:
-#             shutil.copyfileobj(file.file, buffer)
-        
-#         if file.filename.endswith(".pdf"):
-#             loader = PyPDFLoader(file_path)
-#             docs = loader.load()
-
-#             chunks = splitter.split_documents(docs)
-#             vectordb.add_documents(chunks)
-#             vectordb.persist()
-            
-
-#         return {"message": "File uploaded successfully", "filename": file.filename}
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
-
+    transcript_storage[call_id].append({"role": role, "text": transcript})
+    return {"message": "Transcript saved successfully"}
 
 def fetch_call_details(call_id: str):
     url = f"https://api.vapi.ai/call/{call_id}"
@@ -639,9 +607,6 @@ def fetch_call_details(call_id: str):
     }
     response = requests.get(url, headers=headers)
     return response.json()
-
-
-
 
 @app.get("/call-details")
 async def get_call_details(call_id: str = Query(None)):
@@ -653,10 +618,39 @@ async def get_call_details(call_id: str = Query(None)):
         response = fetch_call_details(call_id)
         summary = response.get("summary")
         analysis = response.get("analysis")
-        return {"analysis": analysis, "summary": summary}
+        transcripts = transcript_storage.get(call_id, [])
+        return {"analysis": analysis, "summary": summary, "transcripts": transcripts}
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
-    
+
+
+
+@app.post("/upload-resume")
+async def upload_resume(file: UploadFile = File(...)):
+    try:
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="No selected file")
+
+        file_path = os.path.join(RESUME_DIR, file.filename)
+
+        # Save file
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        if file.filename.endswith(".pdf"):
+            loader = PyPDFLoader(file_path)
+            docs = loader.load()
+
+            chunks = splitter.split_documents(docs)
+            vectordb.add_documents(chunks)
+            vectordb.persist()
+            
+
+        return {"message": "File uploaded successfully", "filename": file.filename}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 
 # ---------------- Email Function ----------------
