@@ -1,7 +1,7 @@
 import io
 import shutil
 import uuid
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File,APIRouter,Form
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File,APIRouter,Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 import mammoth
@@ -570,6 +570,47 @@ def get_interview(interview_id: int, db: Session = Depends(get_db)):
         "video_url": interview.video_url
     }
 
+transcript_storage = {}
+
+@app.post("/save-transcript")
+async def save_transcript(request: Request):
+    data = await request.json()
+    call_id = data.get("call_id")
+    role = data.get("role")
+    transcript = data.get("transcript")
+
+    if not call_id or not role or not transcript:
+        return JSONResponse({"error": "call_id, role, transcript required"}, status_code=400)
+
+    if call_id not in transcript_storage:
+        transcript_storage[call_id] = []
+
+    transcript_storage[call_id].append({"role": role, "text": transcript})
+    return {"message": "Transcript saved successfully"}
+
+def fetch_call_details(call_id: str):
+    url = f"https://api.vapi.ai/call/{call_id}"
+    headers = {
+        "Authorization": f"Bearer {os.getenv('VAPI_API_KEY')}"
+    }
+    response = requests.get(url, headers=headers)
+    return response.json()
+
+@app.get("/call-details")
+async def get_call_details(call_id: str = Query(None)):
+    if not call_id:
+        return JSONResponse(content={"error": "Call ID is required"}, status_code=400)
+
+    try:
+        print("calling function from BE")
+        response = fetch_call_details(call_id)
+        summary = response.get("summary")
+        analysis = response.get("analysis")
+        transcripts = transcript_storage.get(call_id, [])
+        return {"analysis": analysis, "summary": summary, "transcripts": transcripts}
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
@@ -595,6 +636,7 @@ async def chat(request: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/upload-resume")
 async def upload_resume(file: UploadFile = File(...)):
     try:
@@ -619,33 +661,6 @@ async def upload_resume(file: UploadFile = File(...)):
         return {"message": "File uploaded successfully", "filename": file.filename}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-def fetch_call_details(call_id: str):
-    url = f"https://api.vapi.ai/call/{call_id}"
-    headers = {
-        "Authorization": f"Bearer {os.getenv('VAPI_API_KEY')}"
-    }
-    response = requests.get(url, headers=headers)
-    return response.json()
-
-
-
-
-@app.get("/call-details")
-async def get_call_details(call_id: str = Query(None)):
-    if not call_id:
-        return JSONResponse(content={"error": "Call ID is required"}, status_code=400)
-
-    try:
-        print("calling function from BE")
-        response = fetch_call_details(call_id)
-        summary = response.get("summary")
-        analysis = response.get("analysis")
-        return {"analysis": analysis, "summary": summary}
-    except Exception as e:
-        return JSONResponse(content={"error": str(e)}, status_code=500)
-    
 
 
 # ---------------- Email Function ----------------
