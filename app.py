@@ -37,6 +37,7 @@ nltk.download('stopwords')
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
+print("App")
 router = APIRouter()
 RESUME_DIR = "resumes"
 os.makedirs(RESUME_DIR, exist_ok=True)
