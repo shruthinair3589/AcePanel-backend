@@ -22,12 +22,12 @@ from dotenv import load_dotenv
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import smtplib
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader, JSONLoader
-from langchain_groq import ChatGroq
-from langchain_ollama import OllamaEmbeddings
-from langchain_community.vectorstores import Chroma
-from langchain.chains import RetrievalQA
+# from langchain.text_splitter import RecursiveCharacterTextSplitter
+# from langchain_community.document_loaders import PyPDFLoader, JSONLoader
+# from langchain_groq import ChatGroq
+# from langchain_ollama import OllamaEmbeddings
+# from langchain_community.vectorstores import Chroma
+# from langchain.chains import RetrievalQA
 
 load_dotenv()
 
@@ -52,31 +52,31 @@ app.add_middleware(
 )
 
 documents = []
-for filename in os.listdir(RESUME_DIR):
-    if filename.endswith(".pdf"):
-        loader =  PyPDFLoader(os.path.join(RESUME_DIR, filename))
-        docs = loader.load()
-        documents.extend(docs)
+# for filename in os.listdir(RESUME_DIR):
+#     if filename.endswith(".pdf"):
+#         loader =  PyPDFLoader(os.path.join(RESUME_DIR, filename))
+#         docs = loader.load()
+#         documents.extend(docs)
 
 
-splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-chunks = splitter.split_documents(documents)
+# splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+# chunks = splitter.split_documents(documents)
 
 
-embedding_model = OllamaEmbeddings(model="all-minilm")
-vectordb = Chroma.from_documents(chunks, embedding=embedding_model, persist_directory="./chroma_db")
-vectordb.persist()
-print(vectordb)
-retriever = vectordb.as_retriever(search_kwargs={"k": 3})
+# embedding_model = OllamaEmbeddings(model="all-minilm")
+# vectordb = Chroma.from_documents(chunks, embedding=embedding_model, persist_directory="./chroma_db")
+# vectordb.persist()
+# print(vectordb)
+# retriever = vectordb.as_retriever(search_kwargs={"k": 3})
 
 
-llm = ChatGroq(api_key="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", model_name="openai/gpt-oss-120b")
+# llm = ChatGroq(api_key="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", model_name="openai/gpt-oss-120b")
 
-qa_chain = RetrievalQA.from_chain_type(
-    llm=llm,
-    retriever=retriever,
-    return_source_documents=True
-)
+# qa_chain = RetrievalQA.from_chain_type(
+#     llm=llm,
+#     retriever=retriever,
+#     return_source_documents=True
+# )
 
     
 # Dependency
@@ -125,8 +125,9 @@ class InterviewResultUpdate(BaseModel):
     transcript: str
     video_url: str
     status: str = "Completed"
-    score: float | None = None
-    feedback: str | None = None
+    score: Optional[float] = None
+    feedback: Optional[str] = None
+    qualified: Optional[bool] = None  
 
 class ChatRequest(BaseModel):
     message: str
@@ -494,7 +495,7 @@ def download_resume(candidate_id: int, db: Session = Depends(get_db)):
 # ------------------- Interview Endpoints -------------------
 @app.get("/get-all-interviews")
 def get_all_interviews(db: Session = Depends(get_db)):
-    now = func.now()
+    now = datetime.now()
     all_interviews = db.query(Interview).all()
     upcoming, past = [], []
 
@@ -527,9 +528,10 @@ def complete_interview(interview_id: int, result: InterviewResultUpdate, db: Ses
         raise HTTPException(status_code=404, detail="Interview not found")
     interview.transcript = result.transcript
     interview.video_url = result.video_url
-    interview.status = result.status
+    interview.status = 'Completed'
     interview.score = result.score
     interview.feedback = result.feedback
+    interview.qualified = result.qualified
     db.commit()
     db.refresh(interview)
     return {
@@ -556,7 +558,8 @@ def get_candidate_interviews(candidate_id: int, db: Session = Depends(get_db)):
             "score": i.score,
             "call_id": i.call_id,
             "transcript": i.transcript,
-            "video_url": i.video_url
+            "video_url": i.video_url,
+            "qualified": i.qualified
         } for i in candidate.interviews
     ]
 
@@ -579,7 +582,8 @@ def get_interview(interview_id: int, db: Session = Depends(get_db)):
         "call_id": interview.call_id,
         "transcript": interview.transcript,
         "video_url": interview.video_url,
-        "technology": interview.get_technology()
+        "technology": interview.get_technology(),
+        "qualified": interview.qualified
     }
 
 transcript_storage = {}

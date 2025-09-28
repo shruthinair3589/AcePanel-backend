@@ -46,6 +46,7 @@ class Interview(Base):
     call_id = Column(String, nullable=True, unique=True)
     transcript = Column(Text, nullable=True)
     video_url = Column(String, nullable=True)
+    qualified = Column(String, nullable=True)
     technology = Column(Text, nullable=True)  # new field
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
